@@ -3,8 +3,8 @@ import AVFoundation
 import HikariCore
 
 /// Maintains one desktop-level window per connected display, with a temporary
-/// replacement behind it during surface recovery. Every window presents the
-/// same AVPlayer so multi-display wallpaper playback uses
+/// replacement layer behind the current layer during surface recovery. Every
+/// window presents the same AVPlayer so multi-display wallpaper playback uses
 /// one decoder and one local buffer instead of multiplying both per display.
 /// Display IDs come from NSScreenNumber instead of relying on the mutable
 /// order of `NSScreen.screens`.
@@ -22,7 +22,7 @@ final class WallpaperController {
     }
 
     private var sessions: [UInt32: DisplaySession] = [:]
-    private var replacementSessions: [UInt32: DisplaySession] = [:]
+    private var replacementLayers: [UInt32: AVPlayerLayer] = [:]
     private var surfaceRecoveryTask: Task<Void, Never>?
     private var plans: [WallpaperWindowPlan] = []
     private let renderer = VideoRenderer()
@@ -53,19 +53,20 @@ final class WallpaperController {
         }
 
         // Mission Control can invalidate a window's presentation surface even
-        // though its player is healthy. Prepare replacements behind the live
-        // windows, then hand off each display only when it has a video frame.
-        // Closing all windows first exposes black while AVFoundation prepares
-        // the new layers. Seeking the shared player also flushes healthy layers
-        // and is unnecessary: replacement layers use the same running clock.
-        synchronizeDisplayTopology()
+        // though its player is healthy. Prepare replacement layers inside the
+        // live windows, then hand off each display only when it has a video
+        // frame. Keeping the NSWindow and its geometry unchanged avoids a
+        // WindowServer resize during the Space animation. Seeking the shared
+        // player would flush healthy layers and is unnecessary: replacement
+        // layers use the same running clock.
         guard renderer.currentURL != nil else { return }
 
-        for plan in plans where replacementSessions[plan.displayID] == nil {
+        for plan in plans where replacementLayers[plan.displayID] == nil {
             guard let current = sessions[plan.displayID] else { continue }
-            let replacement = makeSession(for: plan)
-            replacementSessions[plan.displayID] = replacement
-            replacement.window.order(.below, relativeTo: current.window.windowNumber)
+            guard let replacement = current.view.prepareReplacementLayer(
+                player: renderer.player
+            ) else { continue }
+            replacementLayers[plan.displayID] = replacement
         }
         startSurfaceRecovery()
     }
@@ -93,11 +94,11 @@ final class WallpaperController {
             closeWindows()
             return
         }
-        synchronizeDisplayTopology()
         for session in sessions.values {
-            // Reassert the all-Spaces membership after Mission Control creates
-            // or removes a desktop. WindowServer may otherwise retain the
-            // previous Space assignment until the next transition.
+            // Reassert only membership and ordering while Mission Control is
+            // animating. Reading and applying a transient NSScreen frame here
+            // can make the wallpaper visibly grow and shrink. Physical display
+            // geometry is reconciled by the display-parameter recovery path.
             session.window.collectionBehavior = Self.wallpaperCollectionBehavior
             // Desktop-level windows are non-key and cannot cover app content.
             // Normal ordering is sufficient; forced ordering could promote a
@@ -175,9 +176,6 @@ final class WallpaperController {
         for session in sessions.values {
             session.view.scalingMode = mode
         }
-        for session in replacementSessions.values {
-            session.view.scalingMode = mode
-        }
     }
 
     func closeWindows() {
@@ -252,20 +250,22 @@ final class WallpaperController {
     }
 
     private func discardReplacement(displayID: UInt32) {
-        guard let session = replacementSessions.removeValue(forKey: displayID) else { return }
-        close(session)
+        guard let replacement = replacementLayers.removeValue(forKey: displayID) else {
+            return
+        }
+        sessions[displayID]?.view.discardReplacementLayer(replacement)
     }
 
     private func cancelSurfaceRecovery() {
         surfaceRecoveryTask?.cancel()
         surfaceRecoveryTask = nil
-        for displayID in Array(replacementSessions.keys) {
+        for displayID in Array(replacementLayers.keys) {
             discardReplacement(displayID: displayID)
         }
     }
 
     private func startSurfaceRecovery() {
-        guard surfaceRecoveryTask == nil, !replacementSessions.isEmpty else { return }
+        guard surfaceRecoveryTask == nil, !replacementLayers.isEmpty else { return }
         surfaceRecoveryTask = Task { @MainActor [weak self] in
             // Readiness, not this deadline, permits the handoff. A stalled or
             // non-video item must never replace a visible window with black,
@@ -275,16 +275,17 @@ final class WallpaperController {
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 16_000_000)
                 guard !Task.isCancelled, let self else { return }
-                for displayID in Array(self.replacementSessions.keys) {
-                    guard let replacement = self.replacementSessions[displayID],
-                          replacement.view.isReadyForDisplay,
-                          let current = self.sessions[displayID] else { continue }
-                    replacement.window.order(.above, relativeTo: current.window.windowNumber)
-                    self.sessions[displayID] = replacement
-                    self.replacementSessions.removeValue(forKey: displayID)
-                    self.close(current)
+                for displayID in Array(self.replacementLayers.keys) {
+                    guard let replacement = self.replacementLayers[displayID],
+                          let current = self.sessions[displayID] else {
+                        self.discardReplacement(displayID: displayID)
+                        continue
+                    }
+                    guard replacement.isReadyForDisplay else { continue }
+                    current.view.promoteReplacementLayer(replacement)
+                    self.replacementLayers.removeValue(forKey: displayID)
                 }
-                if self.replacementSessions.isEmpty || clock.now >= deadline {
+                if self.replacementLayers.isEmpty || clock.now >= deadline {
                     self.cancelSurfaceRecovery()
                     return
                 }
@@ -357,15 +358,15 @@ final class WallpaperController {
 }
 
 private final class WallpaperPlayerView: NSView {
-    private let playerLayer = AVPlayerLayer()
-
-    var isReadyForDisplay: Bool { playerLayer.isReadyForDisplay }
+    private var playerLayer = AVPlayerLayer()
 
     var scalingMode: ScalingMode = .fill {
         didSet {
-            playerLayer.videoGravity = scalingMode == .fill
-                ? .resizeAspectFill
-                : .resizeAspect
+            for layer in videoLayers {
+                layer.videoGravity = scalingMode == .fill
+                    ? .resizeAspectFill
+                    : .resizeAspect
+            }
         }
     }
 
@@ -373,7 +374,9 @@ private final class WallpaperPlayerView: NSView {
         didSet {
             let scale = CGFloat(backingScaleFactor)
             layer?.contentsScale = scale
-            playerLayer.contentsScale = scale
+            for layer in videoLayers {
+                layer.contentsScale = scale
+            }
         }
     }
 
@@ -398,8 +401,38 @@ private final class WallpaperPlayerView: NSView {
         super.layout()
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        playerLayer.frame = bounds
+        for layer in videoLayers {
+            layer.frame = bounds
+        }
         CATransaction.commit()
+    }
+
+    func prepareReplacementLayer(player: AVPlayer) -> AVPlayerLayer? {
+        guard let rootLayer = layer else { return nil }
+        let replacement = AVPlayerLayer(player: player)
+        replacement.contentsScale = CGFloat(backingScaleFactor)
+        replacement.videoGravity = scalingMode == .fill
+            ? .resizeAspectFill
+            : .resizeAspect
+        replacement.frame = bounds
+        rootLayer.insertSublayer(replacement, below: playerLayer)
+        return replacement
+    }
+
+    func promoteReplacementLayer(_ replacement: AVPlayerLayer) {
+        guard let rootLayer = layer, replacement.superlayer === rootLayer else {
+            return
+        }
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        rootLayer.insertSublayer(replacement, above: playerLayer)
+        playerLayer.removeFromSuperlayer()
+        playerLayer = replacement
+        CATransaction.commit()
+    }
+
+    func discardReplacementLayer(_ replacement: AVPlayerLayer) {
+        replacement.removeFromSuperlayer()
     }
 
     deinit {
@@ -407,6 +440,12 @@ private final class WallpaperPlayerView: NSView {
     }
 
     func detachPlayer() {
-        playerLayer.player = nil
+        for layer in videoLayers {
+            layer.player = nil
+        }
+    }
+
+    private var videoLayers: [AVPlayerLayer] {
+        layer?.sublayers?.compactMap { $0 as? AVPlayerLayer } ?? []
     }
 }

@@ -2,6 +2,46 @@
 
 재시도하기 전에 이 문서를 확인한다. 실패한 접근은 다시 적용하지 말고, 전제가 달라진 경우에만 근거와 함께 재검토한다.
 
+## 기본 Command Line Tools SDK로 Native Local 설치 빌드
+
+### 관찰
+
+2026-09-19 `scripts/build-hikari.sh`를 기본 developer 경로에서 실행하자
+`unable to load standard library for target 'arm64-apple-macosx15.0'`로
+`swiftc` 단계가 중단됐다. 소스 오류가 아니라 현재 Mac의 `xcode-select`가
+`/Library/Developer/CommandLineTools`를 가리키고, 전체 Xcode toolchain과 SDK가
+선택되지 않은 상태였다. 설치 대상 `/Applications/Hikari.app`은 이 실패에서
+교체되지 않았다.
+
+### 해결
+
+전체 Xcode 26.6 toolchain의 `swiftc`와 macOS 26.5 SDK를 `PATH`·`SDKROOT`로
+명시해 같은 스크립트를 다시 실행했다. ad-hoc 서명, strict verification, 설치가
+통과했고, 다른 Mac 빌드 절차에서도 전체 Xcode를 선택하라는 기존 문서 지침을
+유지한다.
+
+## Space 복구에서 두 번째 `NSWindow`를 만들어 ready surface를 교체
+
+### 관찰
+
+v0.3.4의 검은 프레임 방지 수정은 기존 창 뒤에 같은 크기의 replacement
+`NSWindow`를 만들고 영상 프레임이 준비되면 위로 올렸다. 검은 프레임은 사라졌지만,
+사용자 확인에서 Space 전환 중 화면이 약간 커졌다 작아지는 현상이 남았다. Space
+애니메이션 중 WindowServer가 같은 display geometry의 desktop window 두 개를 잠시
+합성하는 경로는 불필요한 창 geometry 재평가를 만들 수 있다.
+
+### 해결
+
+`NSWindow`는 display마다 하나만 유지한다. 복구용 `AVPlayerLayer`만 현재
+`WallpaperPlayerView` 안에서 뒤에 준비하고, `isReadyForDisplay`가 true가 된 뒤
+Core Animation transaction 안에서 기존 layer와 교체한다. Space 초기 pass에서는
+`NSScreen` geometry를 다시 읽어 `setFrame`하지 않고 all-Spaces membership와
+ordering만 재확인한다. 물리 디스플레이 geometry는 display-parameter recovery에서만
+동기화한다.
+
+새 layer가 준비되지 않으면 기존 layer와 창을 그대로 보존하고 3초 뒤 replacement만
+버린다. 공유 `AVPlayer`와 현재 item, 재생 위치·rate·음소거 상태는 변경하지 않는다.
+
 ## Pause 직후 raw CMTime의 완전 동일성을 요구한 테스트
 
 v0.3.3 tag CI `34537513600`의 macOS 15 Intel에서 `AVPlayer.pause()` 직후 측정한

@@ -5,9 +5,9 @@ Low resource use is a product requirement, not a later optimization.
 ## Implementation guardrails
 
 - MP4 files are streamed by AVFoundation and are never loaded fully into memory.
-- Each connected display owns one queue player/looper. The MP4 URL is shared,
-  not the decoder or player output. One stable display is the audio owner when
-  mute is disabled.
+- All connected displays share one queue player/looper and one local decoder;
+  each display owns only its `AVPlayerLayer` surface. One stable playback
+  output is used for audio when mute is disabled.
 - Thumbnails are capped at 640 × 360.
 - Pausing stops player progression; shutdown removes all items and loopers.
 - Notification-driven state handling avoids polling timers; a low-frequency
@@ -15,8 +15,8 @@ Low resource use is a product requirement, not a later optimization.
   tolerance.
 - Native Lock playback is owned by the macOS Lock Screen transaction lifecycle.
 - Display changes are diffed by CGDirectDisplayID. Unchanged windows and
-  players are reused; removed displays release their window, player item, and
-  looper immediately.
+  layers are reused; removed displays release their window and surface
+  immediately. Space recovery never creates a second desktop window.
 
 ## Manual three-display QA
 

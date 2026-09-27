@@ -12,9 +12,11 @@ The `Hikari` scheme builds the menu bar application, `HikariCore`,
 `com.hodadako.Hikari.NativeLocal`.
 
 Hikari owns desktop wallpaper windows only. `WallpaperController` creates one
-borderless player per display and keeps those players synchronized across
-display, Space, sleep, and lock transitions. It never installs a screen saver
-or intercepts the system lock shortcut.
+borderless window and `AVPlayerLayer` surface per display, all fed by one shared
+`AVPlayer`. Space recovery prepares a replacement layer inside the existing
+window and swaps it only after the first frame is ready, so window geometry does
+not change during the Space animation. It never installs a screen saver or
+intercepts the system lock shortcut.
 
 ## Shared core
 

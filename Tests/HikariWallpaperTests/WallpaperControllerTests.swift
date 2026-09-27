@@ -37,11 +37,14 @@ final class WallpaperControllerTests: XCTestCase {
 
         for _ in 0..<20 {
             controller.rebuildWindowsIfContentAvailable(true)
-            // The regression closed the ready windows synchronously and
-            // replaced them with black windows, then sought the shared player.
+            // Surface recovery must not create a second desktop window or
+            // change the geometry that WindowServer is animating.
             XCTAssertTrue(previousWindows.isSubset(of: Set(windows.map(\.windowNumber))))
             XCTAssertGreaterThanOrEqual(readyWindows.count, count)
-            try await waitForHandoff(replacing: previousWindows, count: count)
+            try await waitForSurfaceReplacement(
+                previousWindows: previousWindows,
+                count: count
+            )
             XCTAssertTrue(layers.allSatisfy { $0.player === player })
             XCTAssertTrue(player.currentItem === item)
             XCTAssertGreaterThan(player.rate, 0)
@@ -61,7 +64,10 @@ final class WallpaperControllerTests: XCTestCase {
         noSeek.isInverted = true
         let previousWindows = Set(windows.map(\.windowNumber))
         controller.rebuildWindowsIfContentAvailable(true)
-        try await waitForHandoff(replacing: previousWindows, count: NSScreen.screens.count)
+        try await waitForSurfaceReplacement(
+            previousWindows: previousWindows,
+            count: NSScreen.screens.count
+        )
         XCTAssertEqual(player.rate, 0)
         // AVPlayer's pause can settle a fraction of a millisecond after the
         // call on macOS 15 Intel. Preserve the displayed 30fps source frame,
@@ -79,10 +85,14 @@ final class WallpaperControllerTests: XCTestCase {
             controller.rebuildWindowsIfContentAvailable(true)
             controller.refreshWindowsForActiveSpaceIfContentAvailable(true)
         }
-        XCTAssertEqual(windows.count, NSScreen.screens.count * 2)
+        XCTAssertEqual(windows.count, NSScreen.screens.count)
+        XCTAssertEqual(Set(windows.map(\.windowNumber)), previousWindows)
         controller.setScalingMode(.fit)
         XCTAssertTrue(layers.allSatisfy { $0.videoGravity == .resizeAspect })
-        try await waitForHandoff(replacing: previousWindows, count: NSScreen.screens.count)
+        try await waitForSurfaceReplacement(
+            previousWindows: previousWindows,
+            count: NSScreen.screens.count
+        )
         XCTAssertTrue(layers.allSatisfy { $0.player === player })
         controller.setScalingMode(.fill)
         XCTAssertTrue(layers.allSatisfy { $0.videoGravity == .resizeAspectFill })
@@ -114,9 +124,10 @@ final class WallpaperControllerTests: XCTestCase {
         controller.setContent(url: directory.appendingPathComponent("missing.mov"), muted: true)
         let previousWindows = Set(windows.map(\.windowNumber))
         controller.rebuildWindowsIfContentAvailable(true)
-        XCTAssertEqual(windows.count, previousWindows.count * 2)
+        XCTAssertEqual(windows.count, previousWindows.count)
         try await Task.sleep(for: .milliseconds(3300))
         XCTAssertEqual(Set(windows.map(\.windowNumber)), previousWindows)
+        XCTAssertEqual(layers.count, previousWindows.count)
     }
 
     private var windows: [NSWindow] {
@@ -126,29 +137,37 @@ final class WallpaperControllerTests: XCTestCase {
     }
 
     private var readyWindows: [NSWindow] {
-        windows.filter { playerLayer(in: $0)?.isReadyForDisplay == true }
+        windows.filter { playerLayers(in: $0).contains { $0.isReadyForDisplay } }
     }
 
     private var layers: [AVPlayerLayer] {
-        windows.compactMap { playerLayer(in: $0) }
+        windows.flatMap { playerLayers(in: $0) }
+    }
+
+    private func playerLayers(in window: NSWindow) -> [AVPlayerLayer] {
+        window.contentView?.layer?.sublayers?.compactMap { $0 as? AVPlayerLayer } ?? []
     }
 
     private func playerLayer(in window: NSWindow) -> AVPlayerLayer? {
-        window.contentView?.layer?.sublayers?.compactMap { $0 as? AVPlayerLayer }.first
+        playerLayers(in: window).first
     }
 
-    private func waitForHandoff(replacing previous: Set<Int>, count: Int) async throws {
+    private func waitForSurfaceReplacement(
+        previousWindows: Set<Int>,
+        count: Int
+    ) async throws {
         let deadline = ContinuousClock.now.advanced(by: .seconds(2))
         while ContinuousClock.now < deadline {
             // Every display must retain a ready surface throughout recovery.
             XCTAssertGreaterThanOrEqual(readyWindows.count, count)
+            XCTAssertEqual(Set(windows.map(\.windowNumber)), previousWindows)
             if windows.count == count,
-               previous.isDisjoint(with: Set(windows.map(\.windowNumber))) {
+               windows.allSatisfy({ playerLayers(in: $0).count == 1 }) {
                 return
             }
             try await Task.sleep(for: .milliseconds(5))
         }
-        XCTFail("Replacement surfaces did not become ready and retire the old windows")
+        XCTFail("Replacement layers did not become ready and retire the old layers")
     }
 
     private func preparePlayback() async throws -> AVPlayer {

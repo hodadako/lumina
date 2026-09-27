@@ -2,6 +2,53 @@
 
 최신 항목을 위에 추가한다. 각 릴리스에는 사용자 영향, 원인, 조치, 검증, 남은 제약을 기록한다.
 
+## Hikari v0.3.5 (15) — Space 전환 중 화면 크기 변동 수정 (2026-09-19)
+
+### 이슈와 영향
+
+- v0.3.4에서 데스크톱 Space 전환 직후 검은 프레임은 제거됐지만, 복구 중 두 번째
+  desktop `NSWindow`를 만들고 교체하는 순간 영상이 약간 확대·축소되어 보일 수 있었다.
+- Space 애니메이션 중 transient `NSScreen` geometry를 읽어 창 frame을 갱신하는 경로도
+  화면 크기 변동을 유발할 수 있었다.
+
+### 조치
+
+- display마다 하나의 `NSWindow`를 유지하고, 기존 `WallpaperPlayerView` 내부의
+  `AVPlayerLayer`만 뒤에서 준비해 첫 프레임이 준비된 뒤 교체한다. 창 order/frame을
+  교체하지 않으므로 WindowServer의 desktop geometry 재평가를 피한다.
+- Space 초기·settled 복구에서는 all-Spaces membership와 ordering만 재확인한다.
+  물리 display geometry는 display-parameter recovery 경로에서만 적용한다.
+- replacement layer가 3초 안에 준비되지 않으면 기존 layer와 창을 유지한 채 replacement만
+  정리한다. 공유 `AVPlayer`, current item, 재생 위치·의도·음소거 상태는 유지한다.
+
+### 검증
+
+- `xcodegen generate` 통과.
+- Hikari Debug `xcodebuild ... build` 통과.
+- `xcodebuild ... build-for-testing`에서 Hikari 앱과 core/native/wallpaper 테스트 번들
+  컴파일 통과.
+- 샌드박스 밖 Xcode 테스트에서 core/native 81개와 wallpaper surface 테스트 6개,
+  총 87개 테스트가 모두 통과했다. 새 테스트는 반복 복구 중 window ID·geometry가
+  유지되고, 두 번째 창이 생기지 않으며, unready replacement timeout 뒤 기존 layer가
+  남는지 확인한다.
+- 전체 Xcode SDK를 명시한 `scripts/build-hikari.sh`로 ad-hoc 빌드·strict signature
+  검증·설치를 통과했다. `/Applications/Hikari.app`은 `0.3.5 (15)`,
+  `com.hodadako.Hikari.NativeLocal`이며 설치본 executable SHA-256은
+  `ed7c69e2b250f9b01c2875a8457521c1e5de21546985f585735ea40b33ed9cdc`다.
+- 실행 후 pre-Hikari `Lumina` 사용자 저장소가 canonical Hikari 저장소로 병합되고
+  `Lumina.archived`로 보존된 것을 확인했다. 기존 `active` Native Lock transaction은
+  Restore하지 않았고, user/system wallpaper store에는 이 수정 때문에 Apply/Restore를
+  수행하지 않았다.
+- 변경 전후 `git diff --check` 통과. 실제 Space 왕복과 다중 physical display 조합은
+  설치 후 수동 확인 범위다.
+
+### 남은 제약
+
+- macOS의 Mission Control 실제 Space 애니메이션은 자동 입력으로 신뢰성 있게 재현하지
+  않으므로, 설치본에서 여러 Space를 왕복해 검은 프레임과 확대·축소가 모두 사라졌는지
+  사용자가 확인해야 한다.
+- Native Lock transaction은 이번 수정·검증에서 적용하거나 복원하지 않는다.
+
 ## Hikari v0.3.4 (14) — Space 전환의 일시적인 검은 프레임 수정 (2026-09-11)
 
 ### 이슈와 조치
