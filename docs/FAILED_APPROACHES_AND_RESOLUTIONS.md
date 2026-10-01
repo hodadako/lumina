@@ -2,6 +2,32 @@
 
 재시도하기 전에 이 문서를 확인한다. 실패한 접근은 다시 적용하지 말고, 전제가 달라진 경우에만 근거와 함께 재검토한다.
 
+## 2026-10-01 데스크톱 검은 화면: 재생 item 없는 상태의 복구 누락
+
+### 관찰과 원인 범위
+
+- 설치본 0.3.5 (15), macOS 26.6.2, Hikari PID 771에서 바탕화면이 검게 보인다는
+  사용자 보고를 조사했다. 원본 영상 파일은 존재하고 Native Lock transaction은 active,
+  142개 Linked configuration은 모두 기존 asset ID를 유지했다.
+- 12:57:29~33 KST wake/display 재구성 중 `invalid display identifier`,
+  `CALocalDisplayUpdateBlock returned NO`, `SLSTransaction decode timed out`이 기록됐다.
+- 12:57:40부터 13:03:28까지 재생 요청(rate 1)에도
+  `AVPlayerWaitingWithNoItemToPlayReason` / `WaitingForPlaybackItem`이 반복됐다.
+  13:04:26에야 paused로 전환됐으므로 현재 일시정지 설정만을 최초 원인으로 볼 수 없다.
+  item이 없어진 내부 원인까지 이 로그로 확정하지는 않는다.
+- 현재 소스는 같은 URL의 load를 생략하고 template item의 재생 실패 알림으로만
+  `hasPlaybackError`를 설정한다. 주기 복구도 그 flag만 검사하므로 item 없는 대기 상태가
+  자동 복구에서 빠진다. layer 교체만으로는 없는 playback item을 복구할 수 없다.
+
+### 대응과 검증 한계
+
+재생 queue/looper의 item 부재·실패를 감지하고 같은 영상을 다시 준비하는 복구가 필요하다.
+이번 요청은 원인 조사로, 제품 코드·앱·사용자 설정·Native transaction은 변경하지 않았다.
+원시 로그는 `/tmp/hikari-black-20261001/hikari.log`에 보관했다(임시 자료).
+화면 확인을 위한 computer-use는 `Sky Computer Use native pipe startup failed`로 실패해
+직접 화면 검증이나 재생 조작은 수행하지 못했다. 로그·파일 검사로 조사했으며, 화면이
+복구됐다고 기록하지 않는다.
+
 ## 기본 Command Line Tools SDK로 Native Local 설치 빌드
 
 ### 관찰
