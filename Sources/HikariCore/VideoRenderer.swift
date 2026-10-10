@@ -8,6 +8,30 @@ private let playbackLogger = Logger(
     category: "Playback"
 )
 
+struct PlaybackItemHealth {
+    private var missingSince: Date?
+
+    mutating func needsRecovery(hasItem: Bool, itemFailed: Bool, now: Date) -> Bool {
+        if itemFailed {
+            missingSince = nil
+            return true
+        }
+        if hasItem {
+            missingSince = nil
+            return false
+        }
+        guard let missingSince else {
+            missingSince = now
+            return false
+        }
+        return now.timeIntervalSince(missingSince) >= 5
+    }
+
+    mutating func reset() {
+        missingSince = nil
+    }
+}
+
 @MainActor
 public final class VideoRenderer: ObservableObject, PlaybackSession {
     /// Keep only a short local-file buffer. Longer buffers increase memory use
@@ -22,6 +46,7 @@ public final class VideoRenderer: ObservableObject, PlaybackSession {
     private var looper: AVPlayerLooper?
     private var itemFailureToken: NSObjectProtocol?
     private var timeControlObservation: NSKeyValueObservation?
+    private var itemHealth = PlaybackItemHealth()
 
     public init() {
         player.actionAtItemEnd = .none
@@ -41,6 +66,20 @@ public final class VideoRenderer: ObservableObject, PlaybackSession {
             url: currentURL,
             muted: player.isMuted,
             forceReload: true
+        )
+    }
+
+    /// A wake can leave the queue without an item while the URL and looper
+    /// still look valid. Allow transient queue changes to settle first.
+    public func needsPlaybackRecovery(now: Date = Date()) -> Bool {
+        guard currentURL != nil, looper != nil else {
+            itemHealth.reset()
+            return false
+        }
+        return hasPlaybackError || itemHealth.needsRecovery(
+            hasItem: player.currentItem != nil,
+            itemFailed: player.currentItem?.status == .failed,
+            now: now
         )
     }
 
@@ -66,6 +105,7 @@ public final class VideoRenderer: ObservableObject, PlaybackSession {
         player.isMuted = muted
         currentURL = url
         hasPlaybackError = false
+        itemHealth.reset()
     }
 
     public func setMuted(_ muted: Bool) {
@@ -108,6 +148,7 @@ public final class VideoRenderer: ObservableObject, PlaybackSession {
         currentURL = nil
         isPlaying = false
         hasPlaybackError = false
+        itemHealth.reset()
     }
 
     public func releaseResources() {
