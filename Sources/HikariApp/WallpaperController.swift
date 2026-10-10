@@ -349,7 +349,7 @@ final class WallpaperController {
     }
 
     private func recoverFailedPlayer() {
-        guard renderer.hasPlaybackError else { return }
+        guard renderer.needsPlaybackRecovery() else { return }
         renderer.reloadCurrentItem()
         if wantsPlayback {
             renderer.play()

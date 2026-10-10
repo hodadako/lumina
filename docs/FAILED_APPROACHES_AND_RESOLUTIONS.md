@@ -28,6 +28,20 @@
 직접 화면 검증이나 재생 조작은 수행하지 못했다. 로그·파일 검사로 조사했으며, 화면이
 복구됐다고 기록하지 않는다.
 
+### 2026-10-05 후속 조사와 소스 수정
+
+- `pmset -g log`에서 10월 1일 12:01:22부터 잠자기 상태였고, 중간의 maintenance
+  DarkWake 뒤 12:57:29에 사용자 활동으로 FullWake한 것을 확인했다. 위 재생 item 부재와
+  display 오류가 시작된 시각과 일치하므로 장시간 잠자기 복귀가 유력한 재현 조건이다.
+  item이 사라진 AVFoundation 내부 원인까지 확정한 것은 아니다.
+- `VideoRenderer`가 current URL과 looper를 유지하지만 queue item이 5초 이상 없는
+  경우, 또는 현재 item이 failed 상태인 경우 같은 영상을 다시 준비하도록 했다. 잠깐의
+  queue 교체는 복구를 시작하지 않고, item이 돌아오면 유예 시간을 초기화한다. 기존
+  `failedToPlayToEndTime` 복구도 유지한다.
+- item 부재·복귀·실패 상태의 단위 테스트 3개와 Hikari Xcode 전체 테스트가 통과했다.
+  실제 장시간 잠자기 뒤 화면 복구는 아직 재현 검증하지 않았으며, 설치본 0.3.5에는
+  이 소스 수정이 포함되지 않았다. Native Lock transaction과 사용자 설정은 건드리지 않았다.
+
 ## 기본 Command Line Tools SDK로 Native Local 설치 빌드
 
 ### 관찰
